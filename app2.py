@@ -897,6 +897,7 @@ elif st.session_state.step == 5:
                 if city_visual:
                     st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
             st.divider()
+            st.caption("Price guide: $ budget-friendly · $$ moderate · $$$ premium · $$$$ fine dining. Levels are relative to the destination, not fixed prices.")
             st.markdown(sanitize_itinerary(st.session_state.final_itinerary))
         
         if st.button("💾 Save Plan to Sidebar"):
