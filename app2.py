@@ -50,6 +50,7 @@ HKUST_GENAI_BASE_URL = get_secret("HKUST_GENAI_BASE_URL") or "https://hkust.azur
 EMBEDDING_MODEL = get_secret("HKUST_GENAI_EMBEDDING_MODEL") or "text-embedding-3-small"
 CHAT_MODEL = get_secret("HKUST_GENAI_CHAT_MODEL") or "gpt-4o-mini"
 HOST_TRIPADVISOR = get_secret("RAPIDAPI_TRIPADVISOR_HOST") or "tripadvisor-com1.p.rapidapi.com"
+HOST_TRIPADVISOR16 = get_secret("RAPIDAPI_TRIPADVISOR16_HOST") or "tripadvisor16.p.rapidapi.com"
 HOST_TRAVEL_ADVISOR = get_secret("RAPIDAPI_TRAVEL_ADVISOR_HOST") or "travel-advisor.p.rapidapi.com"
 HOST_HOTELS = get_secret("RAPIDAPI_HOTELS_HOST") or "hotels-com-provider.p.rapidapi.com"
 HOST_WEATHER = get_secret("RAPIDAPI_WEATHER_HOST") or "world-weather-online-api1.p.rapidapi.com"
@@ -322,6 +323,53 @@ def get_price_level(item):
     return "Not provided"
 
 
+def get_tripadvisor16_location_id(city_name):
+    """Resolve a city location ID for the subscribed Tripadvisor16 API."""
+    payload = rapid_get(HOST_TRIPADVISOR16, "/api/v1/hotels/searchLocation", {"query": city_name})
+    for item in api_items(payload):
+        if not isinstance(item, dict):
+            continue
+        for key in ("geoId", "locationId", "location_id", "id"):
+            if item.get(key):
+                return item[key]
+    return None
+
+
+def fetch_tripadvisor16_restaurants(city_name):
+    """Use Tripadvisor16's per-venue heroImgUrl, verified from its live response schema."""
+    location_id = get_tripadvisor16_location_id(city_name)
+    if not location_id:
+        return None
+    payload = rapid_get(HOST_TRIPADVISOR16, "/api/v1/restaurant/searchRestaurants", {
+        "locationId": location_id,
+    })
+    raw_items = []
+    place_records = []
+    for item in api_items(payload)[:12]:
+        if not isinstance(item, dict) or not item.get("name") or not item.get("heroImgUrl"):
+            continue
+        name = item["name"]
+        price_level = item.get("priceTag") or "Not provided"
+        address = item.get("address") or item.get("parentGeoName") or city_name
+        place_records.append({
+            "name": name,
+            "address": address,
+            "type": "Restaurant",
+            "provider_image": item["heroImgUrl"],
+        })
+        raw_items.append(f"""
+        TYPE: RESTAURANT
+        NAME: {name}
+        ADDRESS: {address}
+        RATING: {item.get('averageRating', 'N/A')} ({item.get('userReviewCount', '0')} reviews)
+        PRICE_LEVEL: {price_level}
+        OPENING_HOURS: {item.get('currentOpenStatusText', 'Hours not listed')}
+        """)
+    if not place_records:
+        return None
+    return "\n---\n".join(raw_items), place_records
+
+
 def fetch_legacy_travel_advisor_details(city_name):
     """Read place-specific photos from the same Travel Advisor endpoints as the original app."""
     if not HOST_TRAVEL_ADVISOR:
@@ -393,8 +441,14 @@ def fetch_city_details_for_plan(city_name):
     """
     Obtain authentic attraction and restaurant metadata for an itinerary.
     """
+    tripadvisor16_result = fetch_tripadvisor16_restaurants(city_name)
     legacy_result = fetch_legacy_travel_advisor_details(city_name)
     if legacy_result:
+        if tripadvisor16_result:
+            return (
+                "\n---\n".join((tripadvisor16_result[0], legacy_result[0])),
+                tripadvisor16_result[1] + legacy_result[1],
+            )
         return legacy_result
 
     location_id = get_tripadvisor_location_id(city_name)
@@ -437,8 +491,13 @@ def fetch_city_details_for_plan(city_name):
 
     process_items(attractions, "ATTRACTION")
     process_items(restaurants, "RESTAURANT")
-    raw_data = "\n---\n".join(raw_items) or "No live Tripadvisor results were returned for this city."
-    return raw_data, place_records
+    fallback_raw_data = "\n---\n".join(raw_items) or "No live Tripadvisor results were returned for this city."
+    if tripadvisor16_result:
+        return (
+            "\n---\n".join((tripadvisor16_result[0], fallback_raw_data)),
+            tripadvisor16_result[1] + place_records,
+        )
+    return fallback_raw_data, place_records
 
 def search_hotels_smart(city_name, check_in_date, style, max_nightly_budget):
     """
