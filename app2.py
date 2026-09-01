@@ -194,12 +194,12 @@ def get_tripadvisor_location_id(city_name):
     for item in api_items(payload):
         if not isinstance(item, dict):
             continue
-        for key in ("location_id", "locationId", "id"):
+        for key in ("geoId", "location_id", "locationId", "id"):
             if item.get(key):
                 return item[key]
         result = item.get("result_object", {})
         if isinstance(result, dict):
-            for key in ("location_id", "locationId", "id"):
+            for key in ("geoId", "location_id", "locationId", "id"):
                 if result.get(key):
                     return result[key]
     return None
@@ -452,11 +452,47 @@ def fetch_city_details_for_plan(city_name):
         return legacy_result
 
     location_id = get_tripadvisor_location_id(city_name)
-    base_params = {"location_id": location_id, "query": city_name, "limit": "6", "currency": "USD"}
-    attractions = rapid_get(HOST_TRIPADVISOR, "/attractions/search", base_params)
-    restaurants = rapid_get(HOST_TRIPADVISOR, "/restaurants/search", base_params)
+    attraction_params = {"geoId": location_id, "units": "miles", "sortType": "asc"}
+    restaurant_params = {"geoId": location_id, "query": city_name, "limit": "6", "currency": "USD"}
+    attractions = rapid_get(HOST_TRIPADVISOR, "/attractions/search", attraction_params)
+    restaurants = rapid_get(HOST_TRIPADVISOR, "/restaurants/search", restaurant_params)
     raw_items = []
     place_records = []
+
+    def process_attraction_cards(value, seen_names=None):
+        """Read Tripadvisor COM's nested attraction card schema with its native photo URL."""
+        if seen_names is None:
+            seen_names = set()
+        if isinstance(value, list):
+            for entry in value:
+                process_attraction_cards(entry, seen_names)
+            return
+        if not isinstance(value, dict):
+            return
+
+        name = nested_value(value, "cardTitle", "string") or value.get("name")
+        image_template = nested_value(value, "cardPhoto", "sizes", "urlTemplate")
+        if name and image_template and name not in seen_names:
+            seen_names.add(name)
+            image_url = image_template.replace("{width}", "1200").replace("{height}", "800")
+            rating = nested_value(value, "bubbleRating", "rating") or value.get("rating") or "N/A"
+            review_count = nested_value(value, "bubbleRating", "numberReviews", "string") or "0"
+            place_records.append({
+                "name": name,
+                "address": "Address unavailable",
+                "type": "Attraction",
+                "provider_image": image_url,
+            })
+            raw_items.append(f"""
+            TYPE: ATTRACTION
+            NAME: {name}
+            ADDRESS: Address unavailable
+            RATING: {rating} ({review_count} reviews)
+            PRICE_LEVEL: Not provided
+            OPENING_HOURS: Hours not listed
+            """)
+        for nested in value.values():
+            process_attraction_cards(nested, seen_names)
 
     def process_items(payload, type_label):
         for item in api_items(payload)[:6]:
@@ -489,7 +525,7 @@ def fetch_city_details_for_plan(city_name):
             OPENING_HOURS: {item.get('open_now_text', 'Hours not listed')}
             """)
 
-    process_items(attractions, "ATTRACTION")
+    process_attraction_cards(attractions)
     process_items(restaurants, "RESTAURANT")
     fallback_raw_data = "\n---\n".join(raw_items) or "No live Tripadvisor results were returned for this city."
     if tripadvisor16_result:
