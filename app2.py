@@ -761,22 +761,23 @@ elif st.session_state.step == 5:
             st.warning("🛏️ You haven't selected a hotel yet. Pick one from the right side.")
 
         with st.container(border=True):
-            city_visual = get_city_visual(city)
-            if city_visual:
-                st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
-            st.markdown(sanitize_itinerary(st.session_state.final_itinerary))
-
             places = st.session_state.itinerary_places[:6]
             if places:
-                st.markdown("### Places in this itinerary")
-                place_columns = st.columns(2)
+                st.markdown("### 📷 Places in this itinerary")
+                place_columns = st.columns(3)
                 for index, place in enumerate(places):
-                    with place_columns[index % 2]:
+                    with place_columns[index % 3]:
                         place_image = get_place_visual(place["name"], city)
                         if place_image:
                             st.image(place_image, use_container_width=True)
                         st.markdown(f"**{place['name']}**")
                         st.caption(f"{place['type']} · {place['address']}")
+            else:
+                city_visual = get_city_visual(city)
+                if city_visual:
+                    st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
+            st.divider()
+            st.markdown(sanitize_itinerary(st.session_state.final_itinerary))
         
         if st.button("💾 Save Plan to Sidebar"):
             plan_record = {
