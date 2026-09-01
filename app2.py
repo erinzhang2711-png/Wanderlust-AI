@@ -625,6 +625,43 @@ def sanitize_itinerary(markdown_text):
     text_without_images = re.sub(r"<img\b[^>]*>", "", text_without_images, flags=re.IGNORECASE)
     return re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", text_without_images)
 
+
+def render_itinerary_with_place_photos(markdown_text, places, city):
+    """Render every matched itinerary place with its image immediately below it."""
+    itinerary_text = sanitize_itinerary(markdown_text)
+    rendered_until = 0
+
+    for place in places:
+        place_name = place.get("name", "").strip()
+        if not place_name:
+            continue
+
+        match = re.search(re.escape(place_name), itinerary_text[rendered_until:], flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        line_end = itinerary_text.find("\n", rendered_until + match.end())
+        if line_end == -1:
+            line_end = len(itinerary_text)
+
+        text_before_photo = itinerary_text[rendered_until:line_end].strip()
+        if text_before_photo:
+            st.markdown(text_before_photo)
+
+        place_image = download_public_image(place.get("provider_image"))
+        if not place_image:
+            place_image = download_public_image(get_place_visual(place_name, city))
+        if place_image:
+            st.image(place_image, caption=place_name, use_container_width=True)
+        else:
+            st.caption(f"Photo unavailable for {place_name}.")
+
+        rendered_until = line_end
+
+    remaining_text = itinerary_text[rendered_until:].strip()
+    if remaining_text:
+        st.markdown(remaining_text)
+
 # ============================
 # 5. Main App Flow
 # ============================
@@ -879,26 +916,12 @@ elif st.session_state.step == 5:
             st.warning("🛏️ You haven't selected a hotel yet. Pick one from the right side.")
 
         with st.container(border=True):
-            places = st.session_state.itinerary_places[:6]
-            if places:
-                st.markdown("### 📷 Places in this itinerary")
-                place_columns = st.columns(3)
-                for index, place in enumerate(places):
-                    with place_columns[index % 3]:
-                        place_image = download_public_image(place.get("provider_image"))
-                        if not place_image:
-                            place_image = download_public_image(get_place_visual(place["name"], city))
-                        if place_image:
-                            st.image(place_image, use_container_width=True)
-                        st.markdown(f"**{place['name']}**")
-                        st.caption(f"{place['type']} · {place['address']}")
-            else:
-                city_visual = get_city_visual(city)
-                if city_visual:
-                    st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
-            st.divider()
             st.caption("Price guide: $ budget-friendly · $$ moderate · $$$ premium · $$$$ fine dining. Levels are relative to the destination, not fixed prices.")
-            st.markdown(sanitize_itinerary(st.session_state.final_itinerary))
+            render_itinerary_with_place_photos(
+                st.session_state.final_itinerary,
+                st.session_state.itinerary_places,
+                city,
+            )
         
         if st.button("💾 Save Plan to Sidebar"):
             plan_record = {
