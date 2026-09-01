@@ -96,6 +96,7 @@ st.markdown(f"""
     .plan-card {{ min-height:440px; }}
     .plan-label {{ display:inline-block; padding:.28rem .65rem; border-radius:.5rem; color:#fff!important; background:linear-gradient(120deg,var(--blue),var(--violet)); font-size:.85rem; font-weight:800; }}
     .card-img {{ width:100%; height:190px; object-fit:cover; border-radius:13px; margin-bottom:.65rem; }}
+    .card-img-placeholder {{ height:190px; display:flex; align-items:center; justify-content:center; border-radius:13px; margin-bottom:.65rem; background:linear-gradient(135deg,#d9e7ff,#efe0ff); color:#315aab; font-weight:700; }}
     .banner-img {{ display:block; width:min(440px,70%); height:190px; object-fit:cover; border-radius:18px; margin:0 auto 1.5rem; box-shadow:0 18px 38px rgba(48,73,142,.22); }}
     .metric-card {{ min-height:145px; padding:1.2rem; }}
     .metric-card strong {{ color:var(--ink); display:block; font-size:1.55rem; margin-top:.85rem; }}
@@ -682,11 +683,16 @@ elif st.session_state.step == 3:
     for i, city_data in enumerate(st.session_state.recommended_cities):
         with cols[i]:
             c_name = city_data.get('city')
-            img_url = f"https://loremflickr.com/400/300/{c_name},travel"
+            img_url = get_city_visual(c_name)
+            image_markup = (
+                f'<img src="{img_url}" class="card-img">'
+                if img_url
+                else '<div class="card-img-placeholder">📷 City image unavailable</div>'
+            )
             
             st.markdown(f"""
             <div class="city-card">
-                <img src="{img_url}" class="card-img">
+                {image_markup}
                 <h3>{c_name}</h3>
                 <p>{city_data.get('country', '')}</p>
                 <p style="font-size:0.9rem;">{city_data.get('description', 'A destination selected for your travel personality.')[:115]}...</p>
