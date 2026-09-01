@@ -221,6 +221,27 @@ def get_city_visual(city_name):
         pass
     return None
 
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_place_visual(place_name, city_name):
+    """Prefer a Wikimedia image for the actual place, then fall back to its city."""
+    for title_text in (place_name, f"{place_name} {city_name}"):
+        title = urllib.parse.quote(title_text.replace(" ", "_"), safe="")
+        try:
+            response = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}",
+                headers={"User-Agent": "WanderlustAI/1.0 (portfolio demo)"},
+                timeout=6,
+            )
+            if response.ok:
+                payload = response.json()
+                image = nested_value(payload, "thumbnail", "source") or nested_value(payload, "originalimage", "source")
+                if image:
+                    return image
+        except requests.RequestException:
+            continue
+    return get_city_visual(city_name)
+
 def fetch_city_details_for_plan(city_name):
     """
     Obtain authentic attraction and restaurant metadata for an itinerary.
@@ -229,7 +250,8 @@ def fetch_city_details_for_plan(city_name):
     base_params = {"location_id": location_id, "query": city_name, "limit": "6", "currency": "USD"}
     attractions = rapid_get(HOST_TRIPADVISOR, "/attractions/search", base_params)
     restaurants = rapid_get(HOST_TRIPADVISOR, "/restaurants/search", base_params)
-    items = []
+    raw_items = []
+    place_records = []
 
     def process_items(payload, type_label):
         for item in api_items(payload)[:6]:
@@ -242,7 +264,8 @@ def fetch_city_details_for_plan(city_name):
             rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
             reviews = item.get("num_reviews") or item.get("review_count") or "0"
             price_level = item.get("price_level") or item.get("price") or "N/A"
-            items.append(f"""
+            place_records.append({"name": name, "address": address, "type": type_label.title()})
+            raw_items.append(f"""
             TYPE: {type_label}
             NAME: {name}
             ADDRESS: {address}
@@ -253,7 +276,8 @@ def fetch_city_details_for_plan(city_name):
 
     process_items(attractions, "ATTRACTION")
     process_items(restaurants, "RESTAURANT")
-    return "\n---\n".join(items) or "No live Tripadvisor results were returned for this city."
+    raw_data = "\n---\n".join(raw_items) or "No live Tripadvisor results were returned for this city."
+    return raw_data, place_records
 
 def search_hotels_smart(city_name, check_in_date, style, max_nightly_budget):
     """
@@ -458,7 +482,7 @@ class TravelAgent:
         return json.loads(resp.choices[0].message.content)
 
     def generate_detailed_itinerary(self, city, plan_concept, criteria):
-        real_data = fetch_city_details_for_plan(city)
+        real_data, self.itinerary_places = fetch_city_details_for_plan(city)
         
         prompt = f"""
         Create a detailed {criteria['days']}-day itinerary for {city}.
@@ -499,6 +523,7 @@ if "saved_plans" not in st.session_state: st.session_state.saved_plans = []
 if "agent" not in st.session_state and not DEMO_MODE: st.session_state.agent = TravelAgent()
 if "selected_hotel" not in st.session_state: st.session_state.selected_hotel = None
 if "stamp_collection" not in st.session_state: st.session_state.stamp_collection = []
+if "itinerary_places" not in st.session_state: st.session_state.itinerary_places = []
 
 # Header
 st.markdown(banner_img_tag, unsafe_allow_html=True)
@@ -701,6 +726,7 @@ elif st.session_state.step == 4:
                     criteria = {**st.session_state.user_profile, **st.session_state.trip_data}
                     detail = st.session_state.agent.generate_detailed_itinerary(city, details['title'], criteria)
                     st.session_state.final_itinerary = detail
+                    st.session_state.itinerary_places = st.session_state.agent.itinerary_places
                 st.session_state.step = 5
                 st.rerun()
 
@@ -736,6 +762,18 @@ elif st.session_state.step == 5:
             if city_visual:
                 st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
             st.markdown(sanitize_itinerary(st.session_state.final_itinerary))
+
+            places = st.session_state.itinerary_places[:6]
+            if places:
+                st.markdown("### Places in this itinerary")
+                place_columns = st.columns(2)
+                for index, place in enumerate(places):
+                    with place_columns[index % 2]:
+                        place_image = get_place_visual(place["name"], city)
+                        if place_image:
+                            st.image(place_image, use_container_width=True)
+                        st.markdown(f"**{place['name']}**")
+                        st.caption(f"{place['type']} · {place['address']}")
         
         if st.button("💾 Save Plan to Sidebar"):
             plan_record = {
