@@ -426,6 +426,7 @@ class TravelAgent:
         )
         self.pc = Pinecone(api_key=PINECONE_API_KEY)
         self.index = self.pc.Index(INDEX_NAME)
+        self.itinerary_places = []
         self.mbti_map = {
             "INTJ": "quiet architecture logic", "INTP": "unique hidden-gems",
             "ENTJ": "luxury efficient", "ENTP": "adventure novelty",
@@ -520,7 +521,9 @@ if "step" not in st.session_state: st.session_state.step = 1
 if "user_profile" not in st.session_state: st.session_state.user_profile = {}
 if "trip_data" not in st.session_state: st.session_state.trip_data = {}
 if "saved_plans" not in st.session_state: st.session_state.saved_plans = [] 
-if "agent" not in st.session_state and not DEMO_MODE: st.session_state.agent = TravelAgent()
+if not DEMO_MODE and st.session_state.get("agent_schema_version") != "places-v1":
+    st.session_state.agent = TravelAgent()
+    st.session_state.agent_schema_version = "places-v1"
 if "selected_hotel" not in st.session_state: st.session_state.selected_hotel = None
 if "stamp_collection" not in st.session_state: st.session_state.stamp_collection = []
 if "itinerary_places" not in st.session_state: st.session_state.itinerary_places = []
@@ -726,7 +729,7 @@ elif st.session_state.step == 4:
                     criteria = {**st.session_state.user_profile, **st.session_state.trip_data}
                     detail = st.session_state.agent.generate_detailed_itinerary(city, details['title'], criteria)
                     st.session_state.final_itinerary = detail
-                    st.session_state.itinerary_places = st.session_state.agent.itinerary_places
+                    st.session_state.itinerary_places = getattr(st.session_state.agent, "itinerary_places", [])
                 st.session_state.step = 5
                 st.rerun()
 
