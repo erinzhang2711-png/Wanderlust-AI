@@ -36,7 +36,13 @@ The existing `travel-world-openai` Pinecone index is not transferred with this c
 
 ## Build your city dataset
 
-`data/cities.seed.json` is Wanderlust's own starter dataset: 16 curated city profiles with city, country, description, vibes, travel styles, and budget level. It is deliberately structured to match the metadata read by the city-recommendation screen.
+`data/cities.seed.json` is Wanderlust's own starter dataset: 16 curated city profiles with city, country, description, vibes, travel styles, and budget level. For global coverage, generate up to 5,000 additional city records from GeoNames (CC BY 4.0):
+
+```bash
+.venv/bin/python scripts/build_geonames_cities.py --limit 5000
+```
+
+The generated `data/cities.geonames.json` stays local and is ignored by Git. Its source attribution is recorded in `data/SOURCES.md`.
 
 After filling in your HKUST GenAI and Pinecone values in `.env`, run:
 
@@ -45,6 +51,10 @@ After filling in your HKUST GenAI and Pinecone values in `.env`, run:
 ```
 
 The script creates the `PINECONE_INDEX_NAME` index when needed, generates embeddings with your `HKUST_GENAI_EMBEDDING_MODEL`, and uploads the records to `PINECONE_NAMESPACE`. It is safe to run again: the same city IDs are updated rather than duplicated.
+
+## RapidAPI subscriptions
+
+RapidAPI uses one API key, but each API must have its own subscription. Start only with free hard-limit plans and monitor the quota in the RapidAPI dashboard. The original Travel Advisor host may require a separate plan; do not assume an existing key includes hotel, restaurant, attraction, or weather access.
 
 ## Deploy
 
