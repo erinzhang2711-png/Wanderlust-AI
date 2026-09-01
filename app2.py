@@ -198,6 +198,13 @@ def get_tripadvisor_location_id(city_name):
                     return result[key]
     return None
 
+
+def fallback_place_image(city_name, place_name, place_type):
+    """Return a stable visual fallback when a travel provider has no usable photo."""
+    keywords = urllib.parse.quote(f"{city_name},{place_type.lower()},travel", safe=",")
+    lock = sum(ord(char) for char in f"{city_name}:{place_name}") % 10000
+    return f"https://loremflickr.com/960/480/{keywords}?lock={lock}"
+
 def fetch_city_details_for_plan(city_name):
     """
     Obtain authentic attraction/restaurant data, extracting only genuine image URLs
@@ -219,12 +226,13 @@ def fetch_city_details_for_plan(city_name):
             rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
             reviews = item.get("num_reviews") or item.get("review_count") or "0"
             price_level = item.get("price_level") or item.get("price") or "N/A"
-            image = (
+            provider_image = (
                 nested_value(item, "photo", "images", "original", "url")
                 or nested_value(item, "photo", "images", "large", "url")
                 or item.get("image_url")
-                or "N/A"
             )
+            image = provider_image or fallback_place_image(city_name, name, type_label)
+            image_note = "Tripadvisor photo" if provider_image else "Travel visual fallback"
             map_query = urllib.parse.quote(f"{name} {city_name}")
             items.append(f"""
             TYPE: {type_label}
@@ -235,6 +243,7 @@ def fetch_city_details_for_plan(city_name):
             OPENING_HOURS: {item.get('open_now_text', 'Hours not listed')}
             MAP_LINK: https://www.google.com/maps/search/?api=1&query={map_query}
             IMAGE_URL: {image}
+            IMAGE_NOTE: {image_note}
             """)
 
     process_items(attractions, "ATTRACTION")
@@ -460,7 +469,7 @@ class TravelAgent:
         CRITICAL FORMATTING RULES:
         1. **LOCATIONS**: For every attraction/restaurant, display:
            - The Name and Address as a link: `📍 [Name](Map_Link)`
-           - The Single Real Image: `![Name](IMAGE_URL)` (If IMAGE_URL is 'N/A', do not show image).
+           - The image: `![Name](IMAGE_URL)`. Always use the exact IMAGE_URL supplied; do not invent or alter a URL.
            - Details Line: `🏠 Address: ... | ⭐ Rating: ... | 💰 Price Level: ... | 🕒 Hours: ...`
            (Use the exact fields provided. If fields are 'N/A' or missing, Estimate them based on the location type, e.g., "Estimated Price: $$").
            
