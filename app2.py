@@ -242,7 +242,6 @@ def fetch_city_details_for_plan(city_name):
             rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
             reviews = item.get("num_reviews") or item.get("review_count") or "0"
             price_level = item.get("price_level") or item.get("price") or "N/A"
-            map_query = urllib.parse.quote(f"{name} {city_name}")
             items.append(f"""
             TYPE: {type_label}
             NAME: {name}
@@ -250,7 +249,6 @@ def fetch_city_details_for_plan(city_name):
             RATING: {rating} ({reviews} reviews)
             PRICE_LEVEL: {price_level}
             OPENING_HOURS: {item.get('open_now_text', 'Hours not listed')}
-            MAP_LINK: https://www.google.com/maps/search/?api=1&query={map_query}
             """)
 
     process_items(attractions, "ATTRACTION")
@@ -303,8 +301,7 @@ def search_hotels_smart(city_name, check_in_date, style, max_nightly_budget):
                 pass
             if price < 150:
                 tags.append("Value")
-            booking_query = urllib.parse.quote(f"{name} {city_name}")
-            real_hotels.append({"name": name, "price": price, "score": rating, "tags": tags, "image": image, "booking_url": f"https://www.hotels.com/Hotel-Search?destination={booking_query}"})
+            real_hotels.append({"name": name, "price": price, "score": rating, "tags": tags, "image": image})
 
     # Screening Logic
     filtered = [h for h in real_hotels if h['price'] <= max_nightly_budget]
@@ -319,15 +316,12 @@ def search_hotels_smart(city_name, check_in_date, style, max_nightly_budget):
         for i, name in enumerate(fallback_names):
             seed = random.randint(100, 999)
             fallback_img = f"https://loremflickr.com/600/400/hotel,luxury?random={seed}"
-            booking_query = urllib.parse.quote(f"{name} {city_name}")
-            
             filtered.append({
                 "name": name,
                 "price": 150 + (i * 50),
                 "score": "8.5",
                 "tags": ["Estimated", "API fallback"],
                 "image": fallback_img,
-                "booking_url": f"https://www.booking.com/searchresults.html?ss={booking_query}"
             })
 
     # ranking
@@ -470,12 +464,12 @@ class TravelAgent:
         Create a detailed {criteria['days']}-day itinerary for {city}.
         Concept: {plan_concept}
         
-        Raw Data Provided (Contains Names, Addresses, Map Links, Ratings, Prices, and Hours):
+        Raw Data Provided (Contains Names, Addresses, Ratings, Prices, and Hours):
         {real_data}
         
         CRITICAL FORMATTING RULES:
         1. **LOCATIONS**: For every attraction/restaurant, display:
-           - The Name and Address as a link: `📍 [Name](Map_Link)`
+           - The Name and Address as plain text: `📍 Name — Address`
            - Details Line: `🏠 Address: ... | ⭐ Rating: ... | 💰 Price Level: ... | 🕒 Hours: ...`
            (Use the exact fields provided. If fields are 'N/A' or missing, Estimate them based on the location type, e.g., "Estimated Price: $$").
            - Do not output Markdown images. The app renders a stable city image separately.
@@ -484,12 +478,14 @@ class TravelAgent:
         """
         
         resp = self.client.chat.completions.create(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}])
-        return resp.choices[0].message.content
+        return sanitize_itinerary(resp.choices[0].message.content)
 
 
-def remove_markdown_images(markdown_text):
-    """Hide legacy image links generated before the stable city visual was added."""
-    return re.sub(r"!\[[^\]]*\]\([^\)]*\)\s*", "", markdown_text)
+def sanitize_itinerary(markdown_text):
+    """Remove AI-generated image and external link markup from itinerary text."""
+    text_without_images = re.sub(r"!\[[^\]]*\]\([^\)]*\)\s*", "", markdown_text)
+    text_without_images = re.sub(r"<img\b[^>]*>", "", text_without_images, flags=re.IGNORECASE)
+    return re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", text_without_images)
 
 # ============================
 # 5. Main App Flow
@@ -739,7 +735,7 @@ elif st.session_state.step == 5:
             city_visual = get_city_visual(city)
             if city_visual:
                 st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
-            st.markdown(remove_markdown_images(st.session_state.final_itinerary), unsafe_allow_html=True)
+            st.markdown(sanitize_itinerary(st.session_state.final_itinerary))
         
         if st.button("💾 Save Plan to Sidebar"):
             plan_record = {
@@ -765,8 +761,8 @@ elif st.session_state.step == 5:
         
         for h in hotels:
             with st.container(border=True):
-                st.markdown(f"#### 🏨 [{h['name']}]({h['booking_url']})")
-                st.caption("Click name to book on Booking.com ↗")
+                st.markdown(f"#### 🏨 {h['name']}")
+                st.caption("Price and availability should be confirmed with your chosen booking provider.")
 
                 if h['image']:
                     st.markdown(f"""
