@@ -243,6 +243,27 @@ def get_place_visual(place_name, city_name):
             continue
     return get_city_visual(city_name)
 
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_public_image(image_url):
+    """Return verified image bytes so broken third-party URLs never reach the browser."""
+    if not image_url or not image_url.startswith(("https://", "http://")):
+        return None
+    try:
+        response = requests.get(
+            image_url,
+            headers={"User-Agent": "WanderlustAI/1.0 (portfolio demo)"},
+            timeout=8,
+        )
+        content_type = response.headers.get("Content-Type", "")
+        if not response.ok or not content_type.startswith("image/"):
+            return None
+        image_bytes = response.content
+        Image.open(BytesIO(image_bytes)).verify()
+        return image_bytes
+    except (requests.RequestException, OSError):
+        return None
+
 def fetch_city_details_for_plan(city_name):
     """
     Obtain authentic attraction and restaurant metadata for an itinerary.
@@ -265,7 +286,17 @@ def fetch_city_details_for_plan(city_name):
             rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
             reviews = item.get("num_reviews") or item.get("review_count") or "0"
             price_level = item.get("price_level") or item.get("price") or "N/A"
-            place_records.append({"name": name, "address": address, "type": type_label.title()})
+            provider_image = (
+                nested_value(item, "photo", "images", "original", "url")
+                or nested_value(item, "photo", "images", "large", "url")
+                or item.get("image_url")
+            )
+            place_records.append({
+                "name": name,
+                "address": address,
+                "type": type_label.title(),
+                "provider_image": provider_image,
+            })
             raw_items.append(f"""
             TYPE: {type_label}
             NAME: {name}
@@ -773,7 +804,9 @@ elif st.session_state.step == 5:
                 place_columns = st.columns(3)
                 for index, place in enumerate(places):
                     with place_columns[index % 3]:
-                        place_image = get_place_visual(place["name"], city)
+                        place_image = download_public_image(place.get("provider_image"))
+                        if not place_image:
+                            place_image = download_public_image(get_place_visual(place["name"], city))
                         if place_image:
                             st.image(place_image, use_container_width=True)
                         st.markdown(f"**{place['name']}**")
