@@ -5,35 +5,55 @@ import requests
 import folium
 from streamlit_folium import st_folium
 from pinecone import Pinecone
-from openai import AzureOpenAI
+from openai import OpenAI
 from datetime import datetime, timedelta
 import base64
 import random
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 from io import BytesIO
 import urllib.parse 
+import os
+from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 
 # ============================
 # 1. Configuration & Keys
 # ============================
-try:
-    PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-    AZURE_API_KEY = st.secrets["AZURE_API_KEY"]
-    RAPIDAPI_KEY = st.secrets["RAPIDAPI_KEY"]
-except FileNotFoundError:
-    st.error("没有找到 API Keys，请在 Streamlit Cloud 后台配置 Secrets！")
+load_dotenv()
+
+def get_secret(name):
+    """Read local environment variables first, then Streamlit deployment secrets."""
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        return st.secrets.get(name)
+    except FileNotFoundError:
+        return None
+
+
+PINECONE_API_KEY = get_secret("PINECONE_API_KEY")
+HKUST_GENAI_API_KEY = get_secret("HKUST_GENAI_API_KEY")
+RAPIDAPI_KEY = get_secret("RAPIDAPI_KEY")
+DEMO_MODE = os.getenv("WANDERLUST_DEMO_MODE", "false").lower() == "true"
+
+if not DEMO_MODE and not all([PINECONE_API_KEY, HKUST_GENAI_API_KEY, RAPIDAPI_KEY]):
+    st.error("Missing API configuration. Add the required values to .streamlit/secrets.toml or environment variables.")
     st.stop()
 
-INDEX_NAME = "travel-world-openai"
-AZURE_ENDPOINT = "https://hkust.azure-api.net"
-AZURE_API_VERSION = "2023-05-15"
-EMBEDDING_MODEL = "text-embedding-ada-002"
-CHAT_MODEL = "gpt-4o"
+INDEX_NAME = get_secret("PINECONE_INDEX_NAME") or "wanderlust-cities"
+PINECONE_NAMESPACE = get_secret("PINECONE_NAMESPACE") or "cities-v1"
+HKUST_GENAI_BASE_URL = get_secret("HKUST_GENAI_BASE_URL") or "https://hkust.azure-api.net/hkust-genai/v1/"
+EMBEDDING_MODEL = get_secret("HKUST_GENAI_EMBEDDING_MODEL") or "text-embedding-3-small"
+CHAT_MODEL = get_secret("HKUST_GENAI_CHAT_MODEL") or "gpt-4o-mini"
 HOST_ATTRACTIONS = "travel-advisor.p.rapidapi.com"
 HOST_HOTELS = "travel-advisor.p.rapidapi.com" 
 HOST_WEATHER = "weather-api99.p.rapidapi.com"
+
+if not DEMO_MODE and not HKUST_GENAI_BASE_URL:
+    st.error("Missing HKUST_GENAI_BASE_URL. Add the HKUST GenAI endpoint to your environment variables.")
+    st.stop()
 
 # ============================
 # 2. Styling & Helpers
@@ -55,66 +75,41 @@ else:
 
 st.markdown(f"""
 <style>
-    .stApp {{
-        background-color: #8EC5FC;
-        background-image: linear-gradient(62deg, #8EC5FC 0%, #E0C3FC 100%);
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    }}
-    .white-card, .city-card, .plan-card, .hotel-card {{
-        background-color: rgba(255, 255, 255, 0.95) !important;
-        border-radius: 16px;
-        padding: 20px;
-        margin-bottom: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-    }}
-    .white-card *, .city-card *, .plan-card *, .hotel-card * {{
-        color: #2c3e50 !important;
-    }}
-    h1, h2, h3, h4 {{ color: #1a1a1a !important; font-weight: 700 !important; }}
-    p, li, small {{ color: #4a5568 !important; }}
-    
-    .banner-img {{ width: 100%; height: 180px; object-fit: cover; border-radius: 16px; margin-bottom: 20px; }}
-    .card-img {{ width: 100%; height: 160px; object-fit: cover; border-radius: 12px; margin-bottom: 12px; }}
-    
-    .budget-box {{
-        background: linear-gradient(135deg, #2c3e50 0%, #000000 100%) !important;
-        color: white !important;
-        padding: 20px;
-        border-radius: 16px;
-        text-align: center;
-        margin-top: 20px;
-    }}
-    .budget-box * {{ color: white !important; }}
-    
-    .saved-plan-item {{
-        background: white; padding: 10px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #6a11cb;
-    }}
-    
-    a {{
-        text-decoration: none;
-        color: #6a11cb !important;
-        font-weight: bold;
-    }}
-    a:hover {{
-        text-decoration: underline;
-    }}
-    
-    .hotel-card {{
-        padding: 15px;
-        border: 1px solid #eee;
-        transition: box-shadow 0.3s;
-    }}
-    .hotel-card:hover {{
-        box-shadow: 0 8px 16px rgba(0,0,0,0.1);
-    }}
-    
-    /* 酒店主图样式 */
-    .hotel-main-img {{
-        border-radius: 12px;
-        height: 250px;
-        object-fit: cover;
-    }}
+    :root {{ --ink:#091b47; --blue:#2d6be9; --violet:#7043e9; --muted:#60708f; --line:#e3e8f4; }}
+    .stApp {{ background: linear-gradient(118deg, #bad5ff 0%, #b9c7ff 48%, #e3c2ff 100%); color:var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    [data-testid="stAppViewContainer"] > .main {{ background:transparent; }}
+    .block-container {{ max-width: 1420px; padding: 2.3rem 3.5rem 3.5rem; }}
+    [data-testid="stSidebar"] {{ background:rgba(255,255,255,.94); border-right:1px solid rgba(221,226,242,.9); }}
+    [data-testid="stSidebar"] > div:first-child {{ padding-top:1.5rem; }}
+    h1, h2, h3, h4 {{ color:var(--ink)!important; font-weight:800!important; letter-spacing:-.035em; }}
+    p, li, small, label {{ color:var(--muted)!important; }}
+    .hero {{ text-align:center; padding: .25rem 0 1.55rem; }}
+    .hero h1 {{ font-size:clamp(2.7rem,5vw,4.9rem); margin:0; }}
+    .hero p {{ font-size:1.18rem; margin:.35rem 0 0; }}
+    .eyebrow {{ color:#376ce5!important; font-size:.78rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase; margin:0 0 .4rem; }}
+    .white-card, .city-card, .plan-card, .hotel-card, .metric-card {{ background:rgba(255,255,255,.94)!important; border:1px solid rgba(255,255,255,.8); border-radius:20px; padding:1.5rem; margin-bottom:1.25rem; box-shadow:0 15px 34px rgba(48,73,142,.14); }}
+    .city-card {{ padding: .85rem; min-height:340px; }}
+    .city-card h3 {{ font-size:1.65rem; margin:.5rem .25rem .12rem; }}
+    .city-card p {{ margin:.25rem; }}
+    .plan-card {{ min-height:440px; }}
+    .plan-label {{ display:inline-block; padding:.28rem .65rem; border-radius:.5rem; color:#fff!important; background:linear-gradient(120deg,var(--blue),var(--violet)); font-size:.85rem; font-weight:800; }}
+    .card-img {{ width:100%; height:190px; object-fit:cover; border-radius:13px; margin-bottom:.65rem; }}
+    .banner-img {{ display:block; width:min(440px,70%); height:190px; object-fit:cover; border-radius:18px; margin:0 auto 1.5rem; box-shadow:0 18px 38px rgba(48,73,142,.22); }}
+    .metric-card {{ min-height:145px; padding:1.2rem; }}
+    .metric-card strong {{ color:var(--ink); display:block; font-size:1.55rem; margin-top:.85rem; }}
+    .budget-box {{ background:linear-gradient(120deg,#286ce8,#7043e9)!important; color:#fff!important; padding:1.3rem; border-radius:16px; text-align:center; margin-top:1rem; box-shadow:0 12px 26px rgba(63,81,181,.22); }}
+    .budget-box * {{ color:#fff!important; }}
+    .hotel-card {{ padding:1rem; }}
+    .hotel-card img {{ border-radius:13px; }}
+    .stButton > button {{ border-radius:10px; border:1px solid #3673ec; color:#fff; background:#2e6dea; font-weight:750; min-height:2.7rem; transition:.2s ease; }}
+    .stButton > button:hover {{ color:#fff; border-color:#214fae; background:#214fae; transform:translateY(-1px); }}
+    [data-testid="stSidebar"] .stButton > button {{ color:#2d6be9; background:#fff; }}
+    [data-testid="stSidebar"] .stButton > button:hover {{ color:#fff; background:#2d6be9; }}
+    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {{ background:rgba(255,255,255,.93)!important; border-color:#dce3f2!important; border-radius:10px!important; }}
+    .stProgress > div > div > div > div {{ background:linear-gradient(90deg,#2d6be9,#7043e9); }}
+    .sidebar-brand {{ font-size:1.65rem; font-weight:850; letter-spacing:-.05em; color:var(--ink); margin:0 0 1.4rem; }}
+    .section-title {{ margin: .25rem 0 1rem; font-size:1.8rem; }}
+    .step-note {{ text-align:center; color:#4b6194!important; font-size:.85rem; font-weight:700; letter-spacing:.13em; text-transform:uppercase; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -353,7 +348,11 @@ def create_digital_stamp(image_file, title_text, location_text):
 # ============================
 class TravelAgent:
     def __init__(self):
-        self.client = AzureOpenAI(azure_endpoint=AZURE_ENDPOINT, api_version=AZURE_API_VERSION, api_key=AZURE_API_KEY)
+        self.client = OpenAI(
+            api_key=HKUST_GENAI_API_KEY,
+            base_url=HKUST_GENAI_BASE_URL,
+            default_headers={"api-key": HKUST_GENAI_API_KEY},
+        )
         self.pc = Pinecone(api_key=PINECONE_API_KEY)
         self.index = self.pc.Index(INDEX_NAME)
         self.mbti_map = {
@@ -372,7 +371,12 @@ class TravelAgent:
         mbti_keywords = self.mbti_map.get(mbti, "")
         query = f"{feelings} {feelings} {style} {mbti_keywords}"
         res = self.client.embeddings.create(input=query, model=EMBEDDING_MODEL)
-        results = self.index.query(vector=res.data[0].embedding, top_k=3, include_metadata=True)
+        results = self.index.query(
+            vector=res.data[0].embedding,
+            top_k=3,
+            include_metadata=True,
+            namespace=PINECONE_NAMESPACE,
+        )
         return [m['metadata'] for m in results['matches']]
     
     def analyze_image_for_stamp(self, image_bytes):
@@ -438,29 +442,32 @@ if "step" not in st.session_state: st.session_state.step = 1
 if "user_profile" not in st.session_state: st.session_state.user_profile = {}
 if "trip_data" not in st.session_state: st.session_state.trip_data = {}
 if "saved_plans" not in st.session_state: st.session_state.saved_plans = [] 
-if "agent" not in st.session_state: st.session_state.agent = TravelAgent()
+if "agent" not in st.session_state and not DEMO_MODE: st.session_state.agent = TravelAgent()
 if "selected_hotel" not in st.session_state: st.session_state.selected_hotel = None
 if "stamp_collection" not in st.session_state: st.session_state.stamp_collection = []
 
 # Header
 st.markdown(banner_img_tag, unsafe_allow_html=True)
 st.markdown("""
-<div style="text-align:center; padding:10px; background:rgba(255,255,255,0.8); border-radius:10px; margin-bottom:20px;">
-    <h1 style="color:#2C3E50; margin:0;">Wanderlust AI</h1>
-    <p style="color:#555; margin:0;">Your Soul-Matched Travel Companion</p>
+<div class="hero">
+    <p class="eyebrow">Travel intelligence, made personal</p>
+    <h1>Wanderlust AI</h1>
+    <p>Your soul-matched travel companion.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # Sidebar (Saved Plans & Stamps)
 with st.sidebar:
-    st.header("👤 Profile")
+    st.markdown('<p class="sidebar-brand">✈︎ Wanderlust AI</p>', unsafe_allow_html=True)
+    st.markdown("### 👤 Traveller profile")
     if st.session_state.user_profile:
-        st.write(f"**User:** {st.session_state.user_profile.get('nickname')}")
-        st.write(f"**MBTI:** {st.session_state.user_profile.get('mbti')}")
+        st.caption(f"{st.session_state.user_profile.get('nickname')} · {st.session_state.user_profile.get('mbti')}")
+    else:
+        st.caption("Build a profile to tailor every recommendation.")
     
     st.divider()
     
-    st.header("📂 My Saved Plans")
+    st.markdown("### 📂 Saved plans")
     if not st.session_state.saved_plans:
         st.info("No saved plans yet.")
     else:
@@ -472,7 +479,7 @@ with st.sidebar:
                 
     # === Sidebar Logic: Stamp Generation ===
     st.divider()
-    st.header("📸 Memory Stamps")
+    st.markdown("### 📸 Memory stamps")
     
     uploaded_file = st.file_uploader("Upload photo", type=['jpg', 'png', 'jpeg'], key="stamp_uploader")
     
@@ -524,39 +531,41 @@ with st.sidebar:
             mime="image/png"
         )
 
+st.markdown(f'<p class="step-note">Journey {st.session_state.step} of 6</p>', unsafe_allow_html=True)
 progress = (st.session_state.step / 6) * 100
 st.progress(int(progress))
 
 # --- STEP 1: PERSONAL INFO ---
 if st.session_state.step == 1:
-    st.markdown("### 👤 Step 1: About You")
+    st.markdown("<h2 class='section-title'>👤 Tell us about you</h2>", unsafe_allow_html=True)
     with st.container():
         st.markdown('<div class="white-card">', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
-        nickname = col1.text_input("Nickname", value=st.session_state.user_profile.get("nickname", ""))
-        gender = col2.selectbox("Gender", ["Female", "Male", "Other"])
+        nickname = col1.text_input("Nickname (optional)", value=st.session_state.user_profile.get("nickname", ""), placeholder="e.g. Explorer")
+        gender = col2.selectbox("Gender (optional)", ["Prefer not to say", "Female", "Male", "Other"])
         
         col3, col4 = st.columns(2)
         age = col3.number_input("Age", 18, 99, 25)
         mbti_options = ["INTJ", "INTP", "ENTJ", "ENTP", "INFJ", "INFP", "ENFJ", "ENFP", "ISTJ", "ISFJ", "ESTJ", "ESFJ", "ISTP", "ISFP", "ESTP", "ESFP", "General / Not Sure"]
         mbti = col4.selectbox("MBTI (Optional)", mbti_options, index=16)
         
-        if st.button("Next ➡️"):
-            if nickname:
-                st.session_state.user_profile = {"nickname": nickname, "gender": gender, "age": age, "mbti": mbti.split(" ")[0]}
-                st.session_state.step = 2
-                st.rerun()
-            else: st.error("Please enter a nickname.")
+        if st.button("Continue →"):
+            st.session_state.user_profile = {"nickname": nickname or "Explorer", "gender": gender, "age": age, "mbti": mbti.split(" ")[0]}
+            st.session_state.step = 2
+            st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
 # --- STEP 2: TRIP CRITERIA ---
 elif st.session_state.step == 2:
-    st.markdown("### ✈️ Step 2: Trip Criteria")
+    st.markdown("<h2 class='section-title'>Describe the feeling you want</h2>", unsafe_allow_html=True)
+    st.caption("Your vibe guides every destination match.")
     with st.container():
         st.markdown('<div class="white-card">', unsafe_allow_html=True)
+        origin = st.text_input("Vibe / Feeling", placeholder="e.g. Quiet like Lost in Translation")
+        st.caption("Try: cinematic · slow mornings · city walks")
         col1, col2 = st.columns(2)
-        origin = col1.text_input("Origin City", "Hong Kong")
-        feelings = col2.text_input("Vibe / Feeling", placeholder="e.g. Quiet like 'Lost in Translation'")
+        origin_city = col1.text_input("Origin", "Hong Kong")
+        feelings = origin
         
         c1, c2, c3 = st.columns(3)
         daily_budget = c1.number_input("Daily Budget (USD/Person)", min_value=50, max_value=5000, value=250, step=50)
@@ -570,7 +579,7 @@ elif st.session_state.step == 2:
         if st.button("Find Matching Cities ✨"):
             if feelings:
                 st.session_state.trip_data = {
-                    "origin": origin, "feelings": feelings, 
+                    "origin": origin_city, "feelings": feelings,
                     "daily_budget": daily_budget, 
                     "days": days, "pax": pax, "style": style
                 }
@@ -584,7 +593,13 @@ elif st.session_state.step == 2:
 
 # --- STEP 3: CITY SELECTION ---
 elif st.session_state.step == 3:
-    st.markdown("### 🏙️ Step 3: Top Matches")
+    st.markdown("<h2 class='section-title'>✨ Your top matches</h2>", unsafe_allow_html=True)
+    data = st.session_state.trip_data
+    summary = st.columns(4)
+    summary[0].markdown(f"<div class='metric-card'>📍 Origin<strong>{data['origin']}</strong></div>", unsafe_allow_html=True)
+    summary[1].markdown(f"<div class='metric-card'>🗓 Duration<strong>{data['days']} days</strong></div>", unsafe_allow_html=True)
+    summary[2].markdown(f"<div class='metric-card'>👥 Travellers<strong>{data['pax']} travellers</strong></div>", unsafe_allow_html=True)
+    summary[3].markdown(f"<div class='metric-card'>💳 Budget<strong>${data['daily_budget']:.0f} / day</strong></div>", unsafe_allow_html=True)
     cols = st.columns(3)
     for i, city_data in enumerate(st.session_state.recommended_cities):
         with cols[i]:
@@ -595,8 +610,8 @@ elif st.session_state.step == 3:
             <div class="city-card">
                 <img src="{img_url}" class="card-img">
                 <h3>{c_name}</h3>
-                <p>{city_data.get('country')}</p>
-                <p style="font-size:0.8rem;">{city_data.get('description')[:50]}...</p>
+                <p>{city_data.get('country', '')}</p>
+                <p style="font-size:0.9rem;">{city_data.get('description', 'A destination selected for your travel personality.')[:115]}...</p>
             </div>
             """, unsafe_allow_html=True)
             if st.button(f"Choose {c_name}", key=f"c_{i}", use_container_width=True):
@@ -612,28 +627,32 @@ elif st.session_state.step == 3:
 # --- STEP 4: PLAN SELECTION ---
 elif st.session_state.step == 4:
     city = st.session_state.selected_city
-    st.markdown(f"### 🗺️ Step 4: Choose Style for {city}")
+    data = st.session_state.trip_data
+    st.markdown(f"<div class='hero'><h2>Choose your {city} style</h2><p>Compare two AI-generated itineraries before you decide.</p></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='white-card' style='text-align:center; padding:.85rem;'>🗓 {data['days']} days &nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp; 👥 {data['pax']} travellers &nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp; 💳 ${data['daily_budget']:.0f} / day &nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp; 📍 {city}</div>", unsafe_allow_html=True)
     
     concepts = st.session_state.plan_concepts
-    for plan_name, details in concepts.items():
-        with st.container():
-            st.markdown('<div class="plan-card">', unsafe_allow_html=True)
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                st.subheader(f"{plan_name}: {details['title']}")
-                st.write(details['description'])
-                st.caption(f"Highlights: {', '.join(details['highlights'])}")
-            with c2:
-                st.write("")
-                if st.button(f"Select {plan_name}", key=plan_name):
-                    st.session_state.selected_plan_name = plan_name
-                    with st.spinner(f"Contacting Travel Advisor API for {city}..."):
-                        criteria = {**st.session_state.user_profile, **st.session_state.trip_data}
-                        detail = st.session_state.agent.generate_detailed_itinerary(city, details['title'], criteria)
-                        st.session_state.final_itinerary = detail
-                    st.session_state.step = 5
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+    plan_columns = st.columns(len(concepts))
+    for column, (plan_name, details) in zip(plan_columns, concepts.items()):
+        with column:
+            st.markdown(f"""
+            <div class="plan-card">
+                <span class="plan-label">{plan_name}</span>
+                <h3>{details['title']}</h3>
+                <p>{details['description']}</p>
+                <hr style="border:none;border-top:1px solid #e3e8f4;margin:1.4rem 0;">
+                <p class="eyebrow">Highlights</p>
+                <p>{' · '.join(details['highlights'])}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(f"Select {plan_name}", key=plan_name, use_container_width=True):
+                st.session_state.selected_plan_name = plan_name
+                with st.spinner(f"Crafting your {city} itinerary..."):
+                    criteria = {**st.session_state.user_profile, **st.session_state.trip_data}
+                    detail = st.session_state.agent.generate_detailed_itinerary(city, details['title'], criteria)
+                    st.session_state.final_itinerary = detail
+                st.session_state.step = 5
+                st.rerun()
 
 # --- STEP 5: ITINERARY + HOTELS ---
 elif st.session_state.step == 5:
@@ -649,7 +668,8 @@ elif st.session_state.step == 5:
     col_l, col_r = st.columns([2, 1])
     
     with col_l:
-        st.markdown(f"## 🗓️ Itinerary: {st.session_state.selected_plan_name}")
+        st.markdown(f"<h2 class='section-title'>Day 1 · {city}</h2>", unsafe_allow_html=True)
+        st.caption(f"{st.session_state.selected_plan_name} itinerary · generated for your vibe")
         
         if st.session_state.selected_hotel:
             sh = st.session_state.selected_hotel
@@ -681,7 +701,7 @@ elif st.session_state.step == 5:
             st.rerun()
 
     with col_r:
-        st.markdown("### 🏨 Recommended Hotels")
+        st.markdown("<h3 class='section-title'>🛏 Recommended hotels</h3>", unsafe_allow_html=True)
         
         hotels = st.session_state.current_hotel_list
 
@@ -755,8 +775,8 @@ elif st.session_state.step == 5:
             
 # --- STEP 6: JOURNEY MAP ---
 elif st.session_state.step == 6:
-    st.markdown("## 🌍 My Journey Map & Album")
-    st.markdown("Your digital footprint, immortalized as stamps.")
+    st.markdown("<h2 class='section-title'>🌍 My Journey Map & Album</h2>", unsafe_allow_html=True)
+    st.caption("Your digital footprint, immortalized as stamps.")
     
     col_map, col_album = st.columns([2, 1])
     

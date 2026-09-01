@@ -7,3 +7,4 @@ pinecone
 openai
 Pillow    
 geopy      
+python-dotenv
