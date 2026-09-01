@@ -13,6 +13,7 @@ from PIL import Image, ImageOps, ImageDraw, ImageFont
 from io import BytesIO
 import urllib.parse 
 import os
+import re
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
@@ -88,6 +89,7 @@ st.markdown(f"""
     .hero p {{ font-size:1.18rem; margin:.35rem 0 0; }}
     .eyebrow {{ color:#376ce5!important; font-size:.78rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase; margin:0 0 .4rem; }}
     .white-card, .city-card, .plan-card, .hotel-card, .metric-card {{ background:rgba(255,255,255,.94)!important; border:1px solid rgba(255,255,255,.8); border-radius:20px; padding:1.5rem; margin-bottom:1.25rem; box-shadow:0 15px 34px rgba(48,73,142,.14); }}
+    [data-testid="stVerticalBlockBorderWrapper"] {{ background:rgba(255,255,255,.94)!important; border:1px solid rgba(255,255,255,.8)!important; border-radius:20px!important; padding:1.5rem!important; box-shadow:0 15px 34px rgba(48,73,142,.14); }}
     .city-card {{ padding: .85rem; min-height:340px; }}
     .city-card h3 {{ font-size:1.65rem; margin:.5rem .25rem .12rem; }}
     .city-card p {{ margin:.25rem; }}
@@ -199,15 +201,29 @@ def get_tripadvisor_location_id(city_name):
     return None
 
 
-def fallback_place_image(city_name, place_name, place_type):
-    """Return a stable visual fallback when a travel provider has no usable photo."""
-    keywords = urllib.parse.quote(f"{city_name},{place_type.lower()},travel", safe=",")
-    lock = sum(ord(char) for char in f"{city_name}:{place_name}") % 10000
-    return f"https://loremflickr.com/960/480/{keywords}?lock={lock}"
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_city_visual(city_name):
+    """Fetch a stable, public city image without requiring another API key."""
+    title = urllib.parse.quote(city_name.replace(" ", "_"), safe="")
+    try:
+        response = requests.get(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}",
+            headers={"User-Agent": "WanderlustAI/1.0 (portfolio demo)"},
+            timeout=8,
+        )
+        if response.ok:
+            payload = response.json()
+            return (
+                nested_value(payload, "thumbnail", "source")
+                or nested_value(payload, "originalimage", "source")
+            )
+    except requests.RequestException:
+        pass
+    return None
 
 def fetch_city_details_for_plan(city_name):
     """
-    Obtain authentic attraction/restaurant data, extracting only genuine image URLs
+    Obtain authentic attraction and restaurant metadata for an itinerary.
     """
     location_id = get_tripadvisor_location_id(city_name)
     base_params = {"location_id": location_id, "query": city_name, "limit": "6", "currency": "USD"}
@@ -226,13 +242,6 @@ def fetch_city_details_for_plan(city_name):
             rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
             reviews = item.get("num_reviews") or item.get("review_count") or "0"
             price_level = item.get("price_level") or item.get("price") or "N/A"
-            provider_image = (
-                nested_value(item, "photo", "images", "original", "url")
-                or nested_value(item, "photo", "images", "large", "url")
-                or item.get("image_url")
-            )
-            image = provider_image or fallback_place_image(city_name, name, type_label)
-            image_note = "Tripadvisor photo" if provider_image else "Travel visual fallback"
             map_query = urllib.parse.quote(f"{name} {city_name}")
             items.append(f"""
             TYPE: {type_label}
@@ -242,8 +251,6 @@ def fetch_city_details_for_plan(city_name):
             PRICE_LEVEL: {price_level}
             OPENING_HOURS: {item.get('open_now_text', 'Hours not listed')}
             MAP_LINK: https://www.google.com/maps/search/?api=1&query={map_query}
-            IMAGE_URL: {image}
-            IMAGE_NOTE: {image_note}
             """)
 
     process_items(attractions, "ATTRACTION")
@@ -463,21 +470,26 @@ class TravelAgent:
         Create a detailed {criteria['days']}-day itinerary for {city}.
         Concept: {plan_concept}
         
-        Raw Data Provided (Contains Names, Addresses, Map Links, and IMAGE_URL, RATING, PRICE, HOURS):
+        Raw Data Provided (Contains Names, Addresses, Map Links, Ratings, Prices, and Hours):
         {real_data}
         
         CRITICAL FORMATTING RULES:
         1. **LOCATIONS**: For every attraction/restaurant, display:
            - The Name and Address as a link: `📍 [Name](Map_Link)`
-           - The image: `![Name](IMAGE_URL)`. Always use the exact IMAGE_URL supplied; do not invent or alter a URL.
            - Details Line: `🏠 Address: ... | ⭐ Rating: ... | 💰 Price Level: ... | 🕒 Hours: ...`
            (Use the exact fields provided. If fields are 'N/A' or missing, Estimate them based on the location type, e.g., "Estimated Price: $$").
+           - Do not output Markdown images. The app renders a stable city image separately.
            
         2. **TONE**: Engaging and clear.
         """
         
         resp = self.client.chat.completions.create(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}])
         return resp.choices[0].message.content
+
+
+def remove_markdown_images(markdown_text):
+    """Hide legacy image links generated before the stable city visual was added."""
+    return re.sub(r"!\[[^\]]*\]\([^\)]*\)\s*", "", markdown_text)
 
 # ============================
 # 5. Main App Flow
@@ -584,8 +596,7 @@ st.progress(int(progress))
 # --- STEP 1: PERSONAL INFO ---
 if st.session_state.step == 1:
     st.markdown("<h2 class='section-title'>👤 Tell us about you</h2>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown('<div class="white-card">', unsafe_allow_html=True)
+    with st.container(border=True):
         col1, col2 = st.columns(2)
         nickname = col1.text_input("Nickname (optional)", value=st.session_state.user_profile.get("nickname", ""), placeholder="e.g. Explorer")
         gender = col2.selectbox("Gender (optional)", ["Prefer not to say", "Female", "Male", "Other"])
@@ -599,14 +610,12 @@ if st.session_state.step == 1:
             st.session_state.user_profile = {"nickname": nickname or "Explorer", "gender": gender, "age": age, "mbti": mbti.split(" ")[0]}
             st.session_state.step = 2
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
 # --- STEP 2: TRIP CRITERIA ---
 elif st.session_state.step == 2:
     st.markdown("<h2 class='section-title'>Describe the feeling you want</h2>", unsafe_allow_html=True)
     st.caption("Your vibe guides every destination match.")
-    with st.container():
-        st.markdown('<div class="white-card">', unsafe_allow_html=True)
+    with st.container(border=True):
         origin = st.text_input("Vibe / Feeling", placeholder="e.g. Quiet like Lost in Translation")
         st.caption("Try: cinematic · slow mornings · city walks")
         col1, col2 = st.columns(2)
@@ -635,7 +644,6 @@ elif st.session_state.step == 2:
                 st.session_state.step = 3
                 st.rerun()
             else: st.error("Please enter a vibe.")
-        st.markdown('</div>', unsafe_allow_html=True)
 
 # --- STEP 3: CITY SELECTION ---
 elif st.session_state.step == 3:
@@ -727,9 +735,11 @@ elif st.session_state.step == 5:
         else:
             st.warning("🛏️ You haven't selected a hotel yet. Pick one from the right side.")
 
-        st.markdown('<div class="white-card">', unsafe_allow_html=True)
-        st.markdown(st.session_state.final_itinerary, unsafe_allow_html=True) # HTML Allowed here
-        st.markdown('</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            city_visual = get_city_visual(city)
+            if city_visual:
+                st.image(city_visual, caption=f"{city} · travel inspiration", use_container_width=True)
+            st.markdown(remove_markdown_images(st.session_state.final_itinerary), unsafe_allow_html=True)
         
         if st.button("💾 Save Plan to Sidebar"):
             plan_record = {
@@ -754,9 +764,7 @@ elif st.session_state.step == 5:
         if not hotels: st.warning("We couldn't find hotels via API. Please check your network.")
         
         for h in hotels:
-            with st.container():
-                st.markdown('<div class="hotel-card">', unsafe_allow_html=True)
-                
+            with st.container(border=True):
                 st.markdown(f"#### 🏨 [{h['name']}]({h['booking_url']})")
                 st.caption("Click name to book on Booking.com ↗")
 
@@ -773,8 +781,6 @@ elif st.session_state.step == 5:
                     <small>{', '.join(h['tags'])}</small>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
                 
                 is_sel = (st.session_state.selected_hotel is not None) and (st.session_state.selected_hotel['name'] == h['name'])
                 
