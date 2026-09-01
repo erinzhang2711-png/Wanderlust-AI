@@ -47,9 +47,9 @@ PINECONE_NAMESPACE = get_secret("PINECONE_NAMESPACE") or "cities-v1"
 HKUST_GENAI_BASE_URL = get_secret("HKUST_GENAI_BASE_URL") or "https://hkust.azure-api.net/hkust-genai/v1/"
 EMBEDDING_MODEL = get_secret("HKUST_GENAI_EMBEDDING_MODEL") or "text-embedding-3-small"
 CHAT_MODEL = get_secret("HKUST_GENAI_CHAT_MODEL") or "gpt-4o-mini"
-HOST_ATTRACTIONS = "travel-advisor.p.rapidapi.com"
-HOST_HOTELS = "travel-advisor.p.rapidapi.com" 
-HOST_WEATHER = "weather-api99.p.rapidapi.com"
+HOST_TRIPADVISOR = get_secret("RAPIDAPI_TRIPADVISOR_HOST") or "tripadvisor-com1.p.rapidapi.com"
+HOST_HOTELS = get_secret("RAPIDAPI_HOTELS_HOST") or "hotels-com-provider.p.rapidapi.com"
+HOST_WEATHER = get_secret("RAPIDAPI_WEATHER_HOST") or "world-weather-online-api1.p.rapidapi.com"
 
 if not DEMO_MODE and not HKUST_GENAI_BASE_URL:
     st.error("Missing HKUST_GENAI_BASE_URL. Add the HKUST GenAI endpoint to your environment variables.")
@@ -135,123 +135,156 @@ def get_coordinates(location_name):
 # 3. API Tools
 # ============================
 
-def get_location_id(city_name):
+def rapid_get(host, path, params):
+    """Make a bounded RapidAPI request and return an empty object on provider errors."""
     try:
-        headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": HOST_ATTRACTIONS}
-        url = f"https://{HOST_ATTRACTIONS}/locations/search"
-        resp = requests.get(url, headers=headers, params={"query": city_name, "limit": "1", "currency": "USD"}).json()
-        if "data" in resp and resp["data"]:
-            return resp["data"][0]["result_object"]["location_id"]
-    except:
-        pass
+        response = requests.get(
+            f"https://{host}{path}",
+            headers={"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": host},
+            params=params,
+            timeout=12,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as error:
+        print(f"RapidAPI request failed for {host}{path}: {error}")
+    except ValueError:
+        print(f"RapidAPI returned invalid JSON for {host}{path}")
+    return {}
+
+
+def api_items(payload):
+    """Normalise the common list shapes returned by RapidAPI providers."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("data", "results", "items", "properties"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            for nested_key in ("data", "results", "items", "properties"):
+                if isinstance(value.get(nested_key), list):
+                    return value[nested_key]
+    return []
+
+
+def nested_value(value, *keys):
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def get_tripadvisor_location_id(city_name):
+    payload = rapid_get(HOST_TRIPADVISOR, "/auto-complete", {"query": city_name})
+    for item in api_items(payload):
+        if not isinstance(item, dict):
+            continue
+        for key in ("location_id", "locationId", "id"):
+            if item.get(key):
+                return item[key]
+        result = item.get("result_object", {})
+        if isinstance(result, dict):
+            for key in ("location_id", "locationId", "id"):
+                if result.get(key):
+                    return result[key]
     return None
 
 def fetch_city_details_for_plan(city_name):
     """
     Obtain authentic attraction/restaurant data, extracting only genuine image URLs
     """
-    try:
-        loc_id = get_location_id(city_name)
-        if not loc_id: return f"Could not find location ID for {city_name}"
-        
-        headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": HOST_ATTRACTIONS}
-        
-        url_a = f"https://{HOST_ATTRACTIONS}/attractions/list"
-        resp_a = requests.get(url_a, headers=headers, params={"location_id": loc_id, "limit": "6", "currency": "USD"}).json()
-        
-        url_r = f"https://{HOST_ATTRACTIONS}/restaurants/list"
-        resp_r = requests.get(url_r, headers=headers, params={"location_id": loc_id, "limit": "6", "currency": "USD"}).json()
-        
-        items = []
-        
-        def process_items(data_list, type_label):
-            if "data" in data_list:
-                for i_item, item in enumerate(data_list["data"]):
-                    if "name" in item:
-                        name = item['name']
-                        address = item.get('address', 'Address unavailable')
-                        rating = item.get('rating', 'N/A')
-                        num_reviews = item.get('num_reviews', '0')
-                        price_level = item.get('price_level', 'N/A')
-                        open_now_text = item.get('open_now_text', 'Hours not listed')
+    location_id = get_tripadvisor_location_id(city_name)
+    base_params = {"location_id": location_id, "query": city_name, "limit": "6", "currency": "USD"}
+    attractions = rapid_get(HOST_TRIPADVISOR, "/attractions/search", base_params)
+    restaurants = rapid_get(HOST_TRIPADVISOR, "/restaurants/search", base_params)
+    items = []
 
-                        real_image_url = item.get('photo', {}).get('images', {}).get('original', {}).get('url', "")
-                        if not real_image_url:
-                             real_image_url = item.get('photo', {}).get('images', {}).get('large', {}).get('url', "N/A")
-                        
-                        map_query = urllib.parse.quote(f"{name} {city_name}")
-                        map_link = f"https://www.google.com/maps/search/?api=1&query={map_query}"
-                        
-                        items.append(f"""
-                        TYPE: {type_label}
-                        NAME: {name}
-                        ADDRESS: {address}
-                        RATING: {rating} ({num_reviews} reviews)
-                        PRICE_LEVEL: {price_level}
-                        OPENING_HOURS: {open_now_text}
-                        MAP_LINK: {map_link}
-                        IMAGE_URL: {real_image_url} 
-                        """)
+    def process_items(payload, type_label):
+        for item in api_items(payload)[:6]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("title")
+            if not name:
+                continue
+            address = item.get("address") or nested_value(item, "address", "address_string") or "Address unavailable"
+            rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
+            reviews = item.get("num_reviews") or item.get("review_count") or "0"
+            price_level = item.get("price_level") or item.get("price") or "N/A"
+            image = (
+                nested_value(item, "photo", "images", "original", "url")
+                or nested_value(item, "photo", "images", "large", "url")
+                or item.get("image_url")
+                or "N/A"
+            )
+            map_query = urllib.parse.quote(f"{name} {city_name}")
+            items.append(f"""
+            TYPE: {type_label}
+            NAME: {name}
+            ADDRESS: {address}
+            RATING: {rating} ({reviews} reviews)
+            PRICE_LEVEL: {price_level}
+            OPENING_HOURS: {item.get('open_now_text', 'Hours not listed')}
+            MAP_LINK: https://www.google.com/maps/search/?api=1&query={map_query}
+            IMAGE_URL: {image}
+            """)
 
-        process_items(resp_a, "ATTRACTION")
-        process_items(resp_r, "RESTAURANT")
-        
-        return "\n---\n".join(items)
-    except Exception as e:
-        return f"Using fallback data. Error: {str(e)}"
+    process_items(attractions, "ATTRACTION")
+    process_items(restaurants, "RESTAURANT")
+    return "\n---\n".join(items) or "No live Tripadvisor results were returned for this city."
 
 def search_hotels_smart(city_name, check_in_date, style, max_nightly_budget):
     """
     Acquire Authentic Hotels + Mandatory Safety Net Logic (Ensuring Results Every Time)
     """
     real_hotels = []
-    
-    try:
-        loc_id = get_location_id(city_name)
-        if loc_id:
-            headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": HOST_ATTRACTIONS}
-            url = f"https://{HOST_ATTRACTIONS}/hotels/list"
+    regions = rapid_get(HOST_HOTELS, "/v2/regions", {"locale": "en_US", "domain": "US", "query": city_name})
+    region = next((item for item in api_items(regions) if isinstance(item, dict)), None)
+    region_id = None
+    if region:
+        for key in ("region_id", "regionId", "id", "gaiaId"):
+            if region.get(key):
+                region_id = region[key]
+                break
 
-            resp = requests.get(url, headers=headers, params={
-                "location_id": loc_id, 
-                "limit": "30", 
-                "currency": "USD",
-                "sort": "recommended" 
-            }).json()
-            
-            if "data" in resp:
-                for i_item, item in enumerate(resp["data"]):
-                    if "name" not in item: continue
-                    
-                    price_str = item.get("price", "$200") 
-                    try:
-                        clean_price = ''.join([c for c in price_str if c.isdigit()])
-                        price = int(clean_price) if clean_price else 200
-                    except: price = 200
-
-                    real_image_url = item.get('photo', {}).get('images', {}).get('original', {}).get('url', "")
-                    if not real_image_url:
-                         real_image_url = item.get('photo', {}).get('images', {}).get('large', {}).get('url', "")
-                    
-                    booking_query = urllib.parse.quote(f"{item['name']} {city_name}")
-                    booking_url = f"https://www.booking.com/searchresults.html?ss={booking_query}"
-
-                    tags = []
-                    rating = item.get("rating", "N/A")
-                    if rating != "N/A" and float(rating) >= 4.5: tags.append("Top Rated")
-                    if price > 400: tags.append("Luxury")
-                    elif price < 150: tags.append("Value")
-                    
-                    real_hotels.append({
-                        "name": item['name'],
-                        "price": price,
-                        "score": rating,
-                        "tags": tags[:3],
-                        "image": real_image_url,
-                        "booking_url": booking_url
-                    })
-    except Exception as e:
-        print(f"Hotel API Error: {e}")
+    if region_id:
+        check_out = (datetime.strptime(check_in_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        payload = rapid_get(HOST_HOTELS, "/v2/hotels/search", {
+            "domain": "US", "locale": "en_US", "region_id": region_id,
+            "checkin_date": check_in_date, "checkout_date": check_out,
+            "adults_number": 2, "sort_order": "PRICE_LOW_TO_HIGH",
+            "price_max": max(int(max_nightly_budget), 1),
+        })
+        for item in api_items(payload):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("hotel_name")
+            if not name:
+                continue
+            price_value = nested_value(item, "price", "lead", "amount") or nested_value(item, "price", "lead", "formatted") or item.get("price")
+            try:
+                price = int(float(price_value))
+            except (TypeError, ValueError):
+                digits = "".join(char for char in str(price_value or "") if char.isdigit())
+                price = int(digits) if digits else None
+            if price is None:
+                continue
+            rating = item.get("rating") or nested_value(item, "guestReviews", "score") or "N/A"
+            image = item.get("image_url") or nested_value(item, "photo", "images", "original", "url") or nested_value(item, "images", "0", "url") or ""
+            tags = ["Live price"]
+            try:
+                if float(rating) >= 4.5:
+                    tags.append("Top Rated")
+            except (TypeError, ValueError):
+                pass
+            if price < 150:
+                tags.append("Value")
+            booking_query = urllib.parse.quote(f"{name} {city_name}")
+            real_hotels.append({"name": name, "price": price, "score": rating, "tags": tags, "image": image, "booking_url": f"https://www.hotels.com/Hotel-Search?destination={booking_query}"})
 
     # Screening Logic
     filtered = [h for h in real_hotels if h['price'] <= max_nightly_budget]
@@ -272,7 +305,7 @@ def search_hotels_smart(city_name, check_in_date, style, max_nightly_budget):
                 "name": name,
                 "price": 150 + (i * 50),
                 "score": "8.5",
-                "tags": ["Popular", "Fallback Data"],
+                "tags": ["Estimated", "API fallback"],
                 "image": fallback_img,
                 "booking_url": f"https://www.booking.com/searchresults.html?ss={booking_query}"
             })

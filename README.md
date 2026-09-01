@@ -23,7 +23,7 @@ To preview the landing/profile screen without credentials, run `WANDERLUST_DEMO_
 | --- | --- | --- |
 | HKUST GenAI API | City matching, trip concepts, itinerary generation, photo analysis | Subscription API key and model names |
 | Pinecone | Vector search over the city knowledge base | API key and an existing index name |
-| RapidAPI | Travel Advisor attractions/restaurants/hotels and weather | API key with subscriptions to the required APIs |
+| RapidAPI | Tripadvisor COM (restaurants/attractions), Hotels.com Provider (hotel search), World Weather Online (weather) | One API key plus the three free-plan subscriptions |
 
 The existing `travel-world-openai` Pinecone index is not transferred with this code. Create and populate an index under your own account before production use, or ask for the source dataset/export from the original owner.
 
@@ -31,7 +31,7 @@ The existing `travel-world-openai` Pinecone index is not transferred with this c
 
 1. In the HKUST API Developer Portal, subscribe to `hkust-genai-v1`. Copy one subscription key and use the default base URL and model names from `.env.example`.
 2. Create a Pinecone project and index. Record its key and name, then ingest the city vectors/dataset.
-3. In RapidAPI, subscribe to the Travel Advisor and weather APIs used by this app, then create a key.
+3. In RapidAPI, subscribe to the free Basic plans for Tripadvisor COM, Hotels.com Provider, and World Weather Online, then create or regenerate one key.
 4. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in only your own values.
 
 ## Build your city dataset
@@ -54,7 +54,7 @@ The script creates the `PINECONE_INDEX_NAME` index when needed, generates embedd
 
 ## RapidAPI subscriptions
 
-RapidAPI uses one API key, but each API must have its own subscription. Start only with free hard-limit plans and monitor the quota in the RapidAPI dashboard. The original Travel Advisor host may require a separate plan; do not assume an existing key includes hotel, restaurant, attraction, or weather access.
+RapidAPI uses one API key, but each API needs its own subscription. The app uses Tripadvisor COM for attractions/restaurants and Hotels.com Provider for live hotel search. If a provider is unavailable or the free quota is exhausted, the app keeps running and marks hotel results as estimated rather than presenting them as live prices.
 
 ## Deploy
 
