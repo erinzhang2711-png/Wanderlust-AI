@@ -49,7 +49,7 @@ HKUST_GENAI_BASE_URL = get_secret("HKUST_GENAI_BASE_URL") or "https://hkust.azur
 EMBEDDING_MODEL = get_secret("HKUST_GENAI_EMBEDDING_MODEL") or "text-embedding-3-small"
 CHAT_MODEL = get_secret("HKUST_GENAI_CHAT_MODEL") or "gpt-4o-mini"
 HOST_TRIPADVISOR = get_secret("RAPIDAPI_TRIPADVISOR_HOST") or "tripadvisor-com1.p.rapidapi.com"
-HOST_TRAVEL_ADVISOR = get_secret("RAPIDAPI_TRAVEL_ADVISOR_HOST") or ""
+HOST_TRAVEL_ADVISOR = get_secret("RAPIDAPI_TRAVEL_ADVISOR_HOST") or "travel-advisor.p.rapidapi.com"
 HOST_HOTELS = get_secret("RAPIDAPI_HOTELS_HOST") or "hotels-com-provider.p.rapidapi.com"
 HOST_WEATHER = get_secret("RAPIDAPI_WEATHER_HOST") or "world-weather-online-api1.p.rapidapi.com"
 
@@ -259,6 +259,21 @@ def get_travel_advisor_location_id(city_name):
     return None
 
 
+
+def get_price_level(item):
+    """Use only the provider's price data; do not invent a price range."""
+    candidates = (
+        item.get("price_level"),
+        item.get("price"),
+        nested_value(item, "price", "formatted"),
+        nested_value(item, "price", "value"),
+    )
+    for value in candidates:
+        if value not in (None, "", "N/A"):
+            return str(value)
+    return "Not provided"
+
+
 def fetch_legacy_travel_advisor_details(city_name):
     """Read place-specific photos from the same Travel Advisor endpoints as the original app."""
     if not HOST_TRAVEL_ADVISOR:
@@ -282,7 +297,7 @@ def fetch_legacy_travel_advisor_details(city_name):
             address = item.get("address") or "Address unavailable"
             rating = item.get("rating") or "N/A"
             reviews = item.get("num_reviews") or "0"
-            price_level = item.get("price_level") or "N/A"
+            price_level = get_price_level(item)
             provider_image = (
                 nested_value(item, "photo", "images", "original", "url")
                 or nested_value(item, "photo", "images", "large", "url")
@@ -351,7 +366,7 @@ def fetch_city_details_for_plan(city_name):
             address = item.get("address") or nested_value(item, "address", "address_string") or "Address unavailable"
             rating = item.get("rating") or nested_value(item, "rating", "value") or "N/A"
             reviews = item.get("num_reviews") or item.get("review_count") or "0"
-            price_level = item.get("price_level") or item.get("price") or "N/A"
+            price_level = get_price_level(item)
             provider_image = (
                 nested_value(item, "photo", "images", "original", "url")
                 or nested_value(item, "photo", "images", "large", "url")
@@ -594,7 +609,7 @@ class TravelAgent:
         1. **LOCATIONS**: For every attraction/restaurant, display:
            - The Name and Address as plain text: `📍 Name — Address`
            - Details Line: `🏠 Address: ... | ⭐ Rating: ... | 💰 Price Level: ... | 🕒 Hours: ...`
-           (Use the exact fields provided. If fields are 'N/A' or missing, Estimate them based on the location type, e.g., "Estimated Price: $$").
+           (Use the exact fields provided. If a price level is unavailable, write "Not provided".)
            - Do not output Markdown images. The app renders a stable city image separately.
            
         2. **TONE**: Engaging and clear.
