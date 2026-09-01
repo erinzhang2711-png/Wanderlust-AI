@@ -14,6 +14,7 @@ from io import BytesIO
 import urllib.parse 
 import os
 import re
+from difflib import SequenceMatcher
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
@@ -243,6 +244,53 @@ def get_place_visual(place_name, city_name):
         except requests.RequestException:
             continue
     return get_city_visual(city_name)
+
+
+def normalize_place_name(value):
+    """Normalize punctuation and common filler words before matching venue names."""
+    normalized = str(value or "").lower().replace("’", "'")
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\b(the|a|an)\b", " ", normalized).strip()
+
+
+def find_place_record(place_name, places):
+    """Match an itinerary venue to API data even when the AI changes its spelling slightly."""
+    target = normalize_place_name(place_name)
+    best_record = None
+    best_score = 0.0
+    for record in places:
+        candidate = normalize_place_name(record.get("name", ""))
+        if not candidate:
+            continue
+        score = SequenceMatcher(None, target, candidate).ratio()
+        if target in candidate or candidate in target:
+            score = max(score, 0.9)
+        if score > best_score:
+            best_score = score
+            best_record = record
+    return best_record if best_score >= 0.55 else None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_travel_advisor_place_photo(place_name, city_name):
+    """Look up a specific venue photo when it was not in the initial city result set."""
+    if not HOST_TRAVEL_ADVISOR:
+        return None
+    payload = rapid_get(HOST_TRAVEL_ADVISOR, "/locations/search", {
+        "query": f"{place_name} {city_name}",
+        "limit": "1",
+        "currency": "USD",
+    })
+    for item in api_items(payload):
+        result = item.get("result_object", item) if isinstance(item, dict) else {}
+        if isinstance(result, dict):
+            photo = (
+                nested_value(result, "photo", "images", "original", "url")
+                or nested_value(result, "photo", "images", "large", "url")
+            )
+            if photo:
+                return photo
+    return None
 
 
 def get_travel_advisor_location_id(city_name):
@@ -610,7 +658,7 @@ class TravelAgent:
            - The Name and Address as plain text: `📍 Name — Address`
            - Details Line: `🏠 Address: ... | ⭐ Rating: ... | 💰 Price Level: ... | 🕒 Hours: ...`
            (Use the exact fields provided. If a price level is unavailable, write "Not provided".)
-           - Do not output Markdown images. The app renders a stable city image separately.
+           - Do not output Markdown images. The app renders the verified place photo below each location.
            
         2. **TONE**: Engaging and clear.
         """
@@ -627,28 +675,22 @@ def sanitize_itinerary(markdown_text):
 
 
 def render_itinerary_with_place_photos(markdown_text, places, city):
-    """Render every matched itinerary place with its image immediately below it."""
+    """Render a photo directly below every venue line in the itinerary."""
     itinerary_text = sanitize_itinerary(markdown_text)
     rendered_until = 0
 
-    for place in places:
-        place_name = place.get("name", "").strip()
-        if not place_name:
-            continue
-
-        match = re.search(re.escape(place_name), itinerary_text[rendered_until:], flags=re.IGNORECASE)
-        if not match:
-            continue
-
-        line_end = itinerary_text.find("\n", rendered_until + match.end())
-        if line_end == -1:
-            line_end = len(itinerary_text)
-
-        text_before_photo = itinerary_text[rendered_until:line_end].strip()
+    venue_lines = re.finditer(r"(?m)^.*?📍\s*(?P<name>.+?)\s+—\s+.*$", itinerary_text)
+    for match in venue_lines:
+        text_before_photo = itinerary_text[rendered_until:match.end()].strip()
         if text_before_photo:
             st.markdown(text_before_photo)
 
-        place_image = download_public_image(place.get("provider_image"))
+        place_name = match.group("name").strip()
+        record = find_place_record(place_name, places)
+        provider_image = record.get("provider_image") if record else None
+        place_image = download_public_image(provider_image)
+        if not place_image:
+            place_image = download_public_image(get_travel_advisor_place_photo(place_name, city))
         if not place_image:
             place_image = download_public_image(get_place_visual(place_name, city))
         if place_image:
@@ -656,7 +698,7 @@ def render_itinerary_with_place_photos(markdown_text, places, city):
         else:
             st.caption(f"Photo unavailable for {place_name}.")
 
-        rendered_until = line_end
+        rendered_until = match.end()
 
     remaining_text = itinerary_text[rendered_until:].strip()
     if remaining_text:
