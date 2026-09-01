@@ -585,8 +585,14 @@ class TravelAgent:
             base_url=HKUST_GENAI_BASE_URL,
             default_headers={"api-key": HKUST_GENAI_API_KEY},
         )
-        self.pc = Pinecone(api_key=PINECONE_API_KEY)
-        self.index = self.pc.Index(INDEX_NAME)
+        self.pc = None
+        self.index = None
+        if PINECONE_API_KEY:
+            try:
+                self.pc = Pinecone(api_key=PINECONE_API_KEY)
+                self.index = self.pc.Index(INDEX_NAME)
+            except Exception as error:
+                print(f"Pinecone unavailable; using local city data: {error}")
         self.itinerary_places = []
         self.mbti_map = {
             "INTJ": "quiet architecture logic", "INTP": "unique hidden-gems",
@@ -603,14 +609,31 @@ class TravelAgent:
     def recommend_cities(self, feelings, style, mbti):
         mbti_keywords = self.mbti_map.get(mbti, "")
         query = f"{feelings} {feelings} {style} {mbti_keywords}"
-        res = self.client.embeddings.create(input=query, model=EMBEDDING_MODEL)
-        results = self.index.query(
-            vector=res.data[0].embedding,
-            top_k=3,
-            include_metadata=True,
-            namespace=PINECONE_NAMESPACE,
-        )
-        return [m['metadata'] for m in results['matches']]
+        if self.index:
+            try:
+                res = self.client.embeddings.create(input=query, model=EMBEDDING_MODEL)
+                results = self.index.query(
+                    vector=res.data[0].embedding,
+                    top_k=3,
+                    include_metadata=True,
+                    namespace=PINECONE_NAMESPACE,
+                )
+                matches = [match["metadata"] for match in results["matches"]]
+                if matches:
+                    return matches
+            except Exception as error:
+                print(f"Pinecone recommendation failed; using local city data: {error}")
+
+        with open(os.path.join(os.path.dirname(__file__), "data", "cities.seed.json"), encoding="utf-8") as file:
+            city_data = json.load(file)
+        query_words = set(re.findall(r"[a-z]+", query.lower()))
+
+        def score(city):
+            city_words = set(re.findall(r"[a-z]+", " ".join(city.get("vibes", [])).lower()))
+            style_bonus = 4 if style in city.get("styles", []) else 0
+            return len(query_words & city_words) + style_bonus
+
+        return sorted(city_data, key=score, reverse=True)[:3]
     
     def analyze_image_for_stamp(self, image_bytes):
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -713,9 +736,9 @@ if "step" not in st.session_state: st.session_state.step = 1
 if "user_profile" not in st.session_state: st.session_state.user_profile = {}
 if "trip_data" not in st.session_state: st.session_state.trip_data = {}
 if "saved_plans" not in st.session_state: st.session_state.saved_plans = [] 
-if not DEMO_MODE and st.session_state.get("agent_schema_version") != "places-v1":
+if not DEMO_MODE and st.session_state.get("agent_schema_version") != "places-v2":
     st.session_state.agent = TravelAgent()
-    st.session_state.agent_schema_version = "places-v1"
+    st.session_state.agent_schema_version = "places-v2"
 if "selected_hotel" not in st.session_state: st.session_state.selected_hotel = None
 if "stamp_collection" not in st.session_state: st.session_state.stamp_collection = []
 if "itinerary_places" not in st.session_state: st.session_state.itinerary_places = []
