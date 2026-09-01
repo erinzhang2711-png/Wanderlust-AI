@@ -49,6 +49,7 @@ HKUST_GENAI_BASE_URL = get_secret("HKUST_GENAI_BASE_URL") or "https://hkust.azur
 EMBEDDING_MODEL = get_secret("HKUST_GENAI_EMBEDDING_MODEL") or "text-embedding-3-small"
 CHAT_MODEL = get_secret("HKUST_GENAI_CHAT_MODEL") or "gpt-4o-mini"
 HOST_TRIPADVISOR = get_secret("RAPIDAPI_TRIPADVISOR_HOST") or "tripadvisor-com1.p.rapidapi.com"
+HOST_TRAVEL_ADVISOR = get_secret("RAPIDAPI_TRAVEL_ADVISOR_HOST") or ""
 HOST_HOTELS = get_secret("RAPIDAPI_HOTELS_HOST") or "hotels-com-provider.p.rapidapi.com"
 HOST_WEATHER = get_secret("RAPIDAPI_WEATHER_HOST") or "world-weather-online-api1.p.rapidapi.com"
 
@@ -244,6 +245,67 @@ def get_place_visual(place_name, city_name):
     return get_city_visual(city_name)
 
 
+def get_travel_advisor_location_id(city_name):
+    """Resolve the legacy Travel Advisor location ID used by the original app."""
+    payload = rapid_get(HOST_TRAVEL_ADVISOR, "/locations/search", {
+        "query": city_name,
+        "limit": "1",
+        "currency": "USD",
+    })
+    for item in api_items(payload):
+        result = item.get("result_object", {}) if isinstance(item, dict) else {}
+        if isinstance(result, dict) and result.get("location_id"):
+            return result["location_id"]
+    return None
+
+
+def fetch_legacy_travel_advisor_details(city_name):
+    """Read place-specific photos from the same Travel Advisor endpoints as the original app."""
+    if not HOST_TRAVEL_ADVISOR:
+        return None
+    location_id = get_travel_advisor_location_id(city_name)
+    if not location_id:
+        return None
+
+    raw_items = []
+    place_records = []
+    for path, type_label in (("/attractions/list", "ATTRACTION"), ("/restaurants/list", "RESTAURANT")):
+        payload = rapid_get(HOST_TRAVEL_ADVISOR, path, {
+            "location_id": location_id,
+            "limit": "6",
+            "currency": "USD",
+        })
+        for item in api_items(payload)[:6]:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            name = item["name"]
+            address = item.get("address") or "Address unavailable"
+            rating = item.get("rating") or "N/A"
+            reviews = item.get("num_reviews") or "0"
+            price_level = item.get("price_level") or "N/A"
+            provider_image = (
+                nested_value(item, "photo", "images", "original", "url")
+                or nested_value(item, "photo", "images", "large", "url")
+            )
+            place_records.append({
+                "name": name,
+                "address": address,
+                "type": type_label.title(),
+                "provider_image": provider_image,
+            })
+            raw_items.append(f"""
+            TYPE: {type_label}
+            NAME: {name}
+            ADDRESS: {address}
+            RATING: {rating} ({reviews} reviews)
+            PRICE_LEVEL: {price_level}
+            OPENING_HOURS: {item.get('open_now_text', 'Hours not listed')}
+            """)
+    if not place_records:
+        return None
+    return "\n---\n".join(raw_items), place_records
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_public_image(image_url):
     """Return verified image bytes so broken third-party URLs never reach the browser."""
@@ -268,6 +330,10 @@ def fetch_city_details_for_plan(city_name):
     """
     Obtain authentic attraction and restaurant metadata for an itinerary.
     """
+    legacy_result = fetch_legacy_travel_advisor_details(city_name)
+    if legacy_result:
+        return legacy_result
+
     location_id = get_tripadvisor_location_id(city_name)
     base_params = {"location_id": location_id, "query": city_name, "limit": "6", "currency": "USD"}
     attractions = rapid_get(HOST_TRIPADVISOR, "/attractions/search", base_params)
