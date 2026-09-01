@@ -227,7 +227,7 @@ def get_city_visual(city_name):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_place_visual(place_name, city_name):
-    """Prefer a Wikimedia image for the actual place, then fall back to its city."""
+    """Return a Wikimedia photo only when it belongs to the requested venue."""
     for title_text in (place_name, f"{place_name} {city_name}"):
         title = urllib.parse.quote(title_text.replace(" ", "_"), safe="")
         try:
@@ -243,7 +243,7 @@ def get_place_visual(place_name, city_name):
                     return image
         except requests.RequestException:
             continue
-    return get_city_visual(city_name)
+    return None
 
 
 def normalize_place_name(value):
@@ -268,7 +268,7 @@ def find_place_record(place_name, places):
         if score > best_score:
             best_score = score
             best_record = record
-    return best_record if best_score >= 0.55 else None
+    return best_record if best_score >= 0.82 else None
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -678,6 +678,7 @@ class TravelAgent:
         
         CRITICAL FORMATTING RULES:
         1. **LOCATIONS**: For every attraction/restaurant, display:
+           - Select ONLY names listed in Raw Data. Copy each NAME exactly, without renaming or creating venues.
            - The Name and Address as plain text: `📍 Name — Address`
            - Details Line: `🏠 Address: ... | ⭐ Rating: ... | 💰 Price Level: ... | 🕒 Hours: ...`
            (Use the exact fields provided. If a price level is unavailable, write "Not provided".)
@@ -718,8 +719,6 @@ def render_itinerary_with_place_photos(markdown_text, places, city):
             place_image = download_public_image(get_place_visual(place_name, city))
         if place_image:
             st.image(place_image, caption=place_name, use_container_width=True)
-        else:
-            st.caption(f"Photo unavailable for {place_name}.")
 
         rendered_until = match.end()
 
