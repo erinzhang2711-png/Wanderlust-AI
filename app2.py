@@ -75,14 +75,14 @@ else:
 
 st.markdown(f"""
 <style>
-    :root {{ --ink:#091b47; --blue:#2d6be9; --violet:#7043e9; --muted:#60708f; --line:#e3e8f4; }}
+    :root {{ --ink:#091b47; --blue:#2d6be9; --violet:#7043e9; --muted:#40547e; --line:#d8e0f0; }}
     .stApp {{ background: linear-gradient(118deg, #bad5ff 0%, #b9c7ff 48%, #e3c2ff 100%); color:var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
     [data-testid="stAppViewContainer"] > .main {{ background:transparent; }}
     .block-container {{ max-width: 1420px; padding: 2.3rem 3.5rem 3.5rem; }}
     [data-testid="stSidebar"] {{ background:rgba(255,255,255,.94); border-right:1px solid rgba(221,226,242,.9); }}
     [data-testid="stSidebar"] > div:first-child {{ padding-top:1.5rem; }}
     h1, h2, h3, h4 {{ color:var(--ink)!important; font-weight:800!important; letter-spacing:-.035em; }}
-    p, li, small, label {{ color:var(--muted)!important; }}
+    p, li, small, label {{ color:var(--muted)!important; font-weight:500; }}
     .hero {{ text-align:center; padding: .25rem 0 1.55rem; }}
     .hero h1 {{ font-size:clamp(2.7rem,5vw,4.9rem); margin:0; }}
     .hero p {{ font-size:1.18rem; margin:.35rem 0 0; }}
@@ -101,10 +101,14 @@ st.markdown(f"""
     .budget-box * {{ color:#fff!important; }}
     .hotel-card {{ padding:1rem; }}
     .hotel-card img {{ border-radius:13px; }}
-    .stButton > button {{ border-radius:10px; border:1px solid #3673ec; color:#fff; background:#2e6dea; font-weight:750; min-height:2.7rem; transition:.2s ease; }}
-    .stButton > button:hover {{ color:#fff; border-color:#214fae; background:#214fae; transform:translateY(-1px); }}
-    [data-testid="stSidebar"] .stButton > button {{ color:#2d6be9; background:#fff; }}
-    [data-testid="stSidebar"] .stButton > button:hover {{ color:#fff; background:#2d6be9; }}
+    .stButton > button {{ border-radius:10px; border:1px solid #3673ec; color:#fff!important; background:#2e6dea; font-weight:750!important; min-height:2.7rem; transition:.2s ease; }}
+    .stButton > button * {{ color:#fff!important; font-weight:750!important; }}
+    .stButton > button:hover {{ color:#fff!important; border-color:#214fae; background:#214fae; transform:translateY(-1px); }}
+    .stButton > button:hover * {{ color:#fff!important; }}
+    [data-testid="stSidebar"] .stButton > button {{ color:#1d57c8!important; background:#fff; }}
+    [data-testid="stSidebar"] .stButton > button * {{ color:#1d57c8!important; }}
+    [data-testid="stSidebar"] .stButton > button:hover {{ color:#fff!important; background:#2d6be9; }}
+    [data-testid="stSidebar"] .stButton > button:hover * {{ color:#fff!important; }}
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {{ background:rgba(255,255,255,.93)!important; border-color:#dce3f2!important; border-radius:10px!important; }}
     .stProgress > div > div > div > div {{ background:linear-gradient(90deg,#2d6be9,#7043e9); }}
     .sidebar-brand {{ font-size:1.65rem; font-weight:850; letter-spacing:-.05em; color:var(--ink); margin:0 0 1.4rem; }}
